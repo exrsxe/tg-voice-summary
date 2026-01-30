@@ -137,7 +137,7 @@ export default async function handler(
       duration,
       user_id: userId,
     };
-
+    await sendInitialResponse(chatId);
     const enqueueOk = await enqueueJob(payload);
 
     if (enqueueOk) {
