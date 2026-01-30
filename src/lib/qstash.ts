@@ -4,7 +4,9 @@ const QSTASH_ENABLED = (process.env.QSTASH_ENABLED ?? 'false') === 'true'
 const QSTASH_TOKEN = process.env.QSTASH_TOKEN
 const TARGET_URL = process.env.QSTASH_URL // https://.../api/process-job
 
-const QSTASH_PUBLISH_URL = 'https://qstash.upstash.io/v2/publish'
+// ✅ Региональный endpoint QStash (из Request Builder), иначе fallback на глобальный
+const QSTASH_BASE_URL = (process.env.QSTASH_BASE_URL ?? 'https://qstash.upstash.io').replace(/\/$/, '')
+const QSTASH_PUBLISH_URL = `${QSTASH_BASE_URL}/v2/publish`
 
 export async function enqueueJob(payload: any): Promise<boolean> {
   logEvent('qstash_env_check', {
@@ -12,6 +14,7 @@ export async function enqueueJob(payload: any): Promise<boolean> {
     HAS_TOKEN: Boolean(process.env.QSTASH_TOKEN),
     HAS_URL: Boolean(process.env.QSTASH_URL),
     URL_VALUE: process.env.QSTASH_URL,
+    BASE_URL: QSTASH_BASE_URL,
   })
 
   if (!QSTASH_ENABLED || !QSTASH_TOKEN || !TARGET_URL) {
@@ -21,13 +24,16 @@ export async function enqueueJob(payload: any): Promise<boolean> {
         hasToken: Boolean(QSTASH_TOKEN),
         hasUrl: Boolean(TARGET_URL),
       },
-      payload,
     })
-    return false // <-- важно: это НЕ enqueue, пусть webhook решает fallback
+    return false
   }
 
   const publishUrl = `${QSTASH_PUBLISH_URL}/${encodeURIComponent(TARGET_URL)}`
   logEvent('before_qstash_publish', { publishUrl })
+
+  // ✅ Таймаут, чтобы не зависало навсегда
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 10_000)
 
   try {
     const res = await fetch(publishUrl, {
@@ -37,22 +43,28 @@ export async function enqueueJob(payload: any): Promise<boolean> {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(payload),
+      signal: controller.signal,
     })
 
     if (!res.ok) {
       const text = await res.text().catch(() => '')
       logError('enqueue_failed', `QStash publish failed: ${res.status} ${text}`, {
-        target: TARGET_URL,
         status: res.status,
+        target: TARGET_URL,
+        baseUrl: QSTASH_BASE_URL,
       })
       return false
     }
 
-    // QStash обычно возвращает JSON, но нам не обязательно его парсить
-    logEvent('enqueued_job', { target: TARGET_URL })
+    logEvent('enqueued_job', { target: TARGET_URL, baseUrl: QSTASH_BASE_URL })
     return true
   } catch (err) {
-    logError('enqueue_failed', (err as Error).message, { target: TARGET_URL })
+    logError('enqueue_failed', (err as Error).message, {
+      target: TARGET_URL,
+      baseUrl: QSTASH_BASE_URL,
+    })
     return false
+  } finally {
+    clearTimeout(timeoutId)
   }
 }
