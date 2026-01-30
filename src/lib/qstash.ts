@@ -1,4 +1,3 @@
-import axios from 'axios'
 import { logEvent, logError } from '../utils/logger'
 
 const QSTASH_ENABLED = (process.env.QSTASH_ENABLED ?? 'false') === 'true'
@@ -24,19 +23,32 @@ export async function enqueueJob(payload: any): Promise<boolean> {
       },
       payload,
     })
-    return true
+    return false // <-- важно: это НЕ enqueue, пусть webhook решает fallback
   }
 
+  const publishUrl = `${QSTASH_PUBLISH_URL}/${encodeURIComponent(TARGET_URL)}`
+  logEvent('before_qstash_publish', { publishUrl })
+
   try {
-    const publishUrl = `${QSTASH_PUBLISH_URL}/${encodeURIComponent(TARGET_URL)}`
-    await axios.post(publishUrl, payload, {
+    const res = await fetch(publishUrl, {
+      method: 'POST',
       headers: {
         Authorization: `Bearer ${QSTASH_TOKEN}`,
         'Content-Type': 'application/json',
       },
-      timeout: 10000,
+      body: JSON.stringify(payload),
     })
 
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      logError('enqueue_failed', `QStash publish failed: ${res.status} ${text}`, {
+        target: TARGET_URL,
+        status: res.status,
+      })
+      return false
+    }
+
+    // QStash обычно возвращает JSON, но нам не обязательно его парсить
     logEvent('enqueued_job', { target: TARGET_URL })
     return true
   } catch (err) {
